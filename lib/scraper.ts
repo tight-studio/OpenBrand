@@ -245,7 +245,7 @@ async function extractColors(
       const content = $(el).attr("content")?.trim();
       if (content) {
         const hex = normalizeToHex(content);
-        if (hex && !isGenericColor(hex)) themeColors.push(hex);
+        if (hex) themeColors.push(hex);
       }
     });
   }
@@ -266,7 +266,7 @@ async function extractColors(
             const val = manifest[key];
             if (val) {
               const hex = normalizeToHex(val);
-              if (hex && !isGenericColor(hex)) themeColors.push(hex);
+              if (hex) themeColors.push(hex);
             }
           }
         }
@@ -299,7 +299,7 @@ async function extractColors(
         if (!res.ok) return;
         const buf = Buffer.from(await res.arrayBuffer());
         const { data, info } = await sharp(buf)
-          .resize(16, 16, { fit: "cover" })
+          .resize(16, 16, { fit: "cover", kernel: "nearest" })
           .removeAlpha()
           .raw()
           .toBuffer({ resolveWithObject: true });
@@ -307,14 +307,12 @@ async function extractColors(
         for (let i = 0; i < data.length; i += info.channels) {
           const r = data[i], g = data[i + 1], b = data[i + 2];
           const hex = rgbToHex(r, g, b);
-          if (!isGenericColor(hex)) {
-            // Weight by saturation: more saturated = more likely brand color
-            const max = Math.max(r, g, b);
-            const min = Math.min(r, g, b);
-            const saturation = max === 0 ? 0 : (max - min) / max;
-            const weight = 1 + saturation * 3; // 1x–4x based on saturation
-            logoColors.set(hex, (logoColors.get(hex) || 0) + weight);
-          }
+          // Weight by saturation: more saturated = more likely brand color
+          const max = Math.max(r, g, b);
+          const min = Math.min(r, g, b);
+          const saturation = max === 0 ? 0 : (max - min) / max;
+          const weight = 1 + saturation * 3; // 1x–4x based on saturation
+          logoColors.set(hex, (logoColors.get(hex) || 0) + weight);
         }
       } catch {
         // Skip logos that fail to fetch/process
@@ -322,12 +320,31 @@ async function extractColors(
     })
   );
 
-  // Sort logo colors by weighted score and deduplicate similar colors
-  const sortedLogoColors = [...logoColors.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .map(([hex]) => hex);
+  // Split into chromatic (saturated) and achromatic (gray/black/white) colors
+  const chromatic: [string, number][] = [];
+  const achromatic: [string, number][] = [];
+  for (const [hex, weight] of logoColors.entries()) {
+    const [r, g, b] = hexToRgb(hex);
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const saturation = max === 0 ? 0 : (max - min) / max;
+    if (saturation > 0.1) {
+      chromatic.push([hex, weight]);
+    } else {
+      achromatic.push([hex, weight]);
+    }
+  }
 
-  const deduped = deduplicateColors(sortedLogoColors);
+  // Sort each group by weight, deduplicate
+  chromatic.sort((a, b) => b[1] - a[1]);
+  achromatic.sort((a, b) => b[1] - a[1]);
+
+  // Prefer chromatic colors first, fill remaining with achromatic
+  const sorted = [
+    ...chromatic.map(([hex]) => hex),
+    ...achromatic.map(([hex]) => hex),
+  ];
+  const deduped = deduplicateColors(sorted);
 
   // ── Combine: theme-color first, then logo-derived colors ──
   const ranked: string[] = [];
@@ -397,19 +414,6 @@ function normalizeToHex(color: string): string | null {
 
 function rgbToHex(r: number, g: number, b: number): string {
   return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
-}
-
-function isGenericColor(hex: string): boolean {
-  const [r, g, b] = hexToRgb(hex);
-  // Near-white (all channels > 230)
-  if (r > 230 && g > 230 && b > 230) return true;
-  // Near-black (all channels < 25)
-  if (r < 25 && g < 25 && b < 25) return true;
-  // Gray (all channels within 15 of each other)
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  if (max - min < 15 && r > 50 && r < 210) return true;
-  return false;
 }
 
 // ── Backdrops ────────────────────────────────────────────────────────
