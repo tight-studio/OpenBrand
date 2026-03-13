@@ -56,6 +56,17 @@ async function fetchViaJina(url: string): Promise<string | null> {
   }
 }
 
+function stripQueryParams(url: string): string {
+  if (url.startsWith("data:")) return url;
+  try {
+    const u = new URL(url);
+    u.search = "";
+    return u.href;
+  } catch {
+    return url;
+  }
+}
+
 function resolveUrl(href: string | undefined, baseUrl: string): string | null {
   if (!href) return null;
   try {
@@ -125,7 +136,9 @@ async function extractImages(
   const seen = new Set<string>();
 
   function addCandidate(c: Omit<ImageCandidate, "resolution">) {
-    if (!c.url || seen.has(c.url)) return;
+    if (!c.url) return;
+    c.url = stripQueryParams(c.url);
+    if (seen.has(c.url)) return;
     seen.add(c.url);
     candidates.push(c);
   }
@@ -497,8 +510,10 @@ function extractCssBackdrops(
   const backdrops: BackdropAsset[] = [];
   const seen = new Set<string>();
 
-  function add(url: string | null, description?: string) {
-    if (!url || seen.has(url)) return;
+  function add(rawUrl: string | null, description?: string) {
+    if (!rawUrl) return;
+    const url = stripQueryParams(rawUrl);
+    if (seen.has(url)) return;
     if (url.startsWith("data:") || url.endsWith(".svg")) return;
     seen.add(url);
     backdrops.push({ url, description });
