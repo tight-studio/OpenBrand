@@ -24,9 +24,12 @@ export async function POST(request: Request) {
       );
     }
 
+    console.log(JSON.stringify({ event: "extract_request", url, timestamp: new Date().toISOString() }));
+
     const extracted = await extractBrandAssets(url);
 
     if (!extracted) {
+      console.log(JSON.stringify({ event: "extract_empty", url }));
       return NextResponse.json(
         {
           success: false,
@@ -43,12 +46,25 @@ export async function POST(request: Request) {
       backdrops: extracted.backdrop_images || [],
     };
 
+    console.log(JSON.stringify({
+      event: "extract_success",
+      url,
+      brandName: result.brandName,
+      logoCount: result.logos.length,
+      colorCount: result.colors.length,
+      backdropCount: result.backdrops.length,
+    }));
+
     return NextResponse.json({
       success: true,
       data: result,
     } satisfies ExtractionResponse);
   } catch (error) {
-    console.error("Extract error:", error);
+    console.error(JSON.stringify({
+      event: "extract_error",
+      url: "unknown",
+      error: error instanceof Error ? error.message : "Unknown error",
+    }));
     return NextResponse.json(
       {
         success: false,
