@@ -241,11 +241,6 @@ async function extractImages(
       continue;
     }
 
-    // Any location, width ≥ 800 → backdrop
-    if (width && width >= 800) {
-      backdrops.push({ url: c.url, description: "Large content image" });
-      continue;
-    }
   }
 
   // ── Pass 2: Low-confidence logos (only if none found in pass 1) ──
