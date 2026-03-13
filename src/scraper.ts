@@ -91,141 +91,203 @@ async function parseHtml(
   const $ = cheerio.load(html);
   const domainName = getDomainName(baseUrl);
 
-  const logos = await extractLogos($, baseUrl, domainName);
+  const { logos, backdrops: imgBackdrops } = await extractImages($, baseUrl, domainName);
   const colors = await extractColors($, baseUrl, logos);
+  const cssBackdrops = extractCssBackdrops($, html, baseUrl);
 
   return {
     logos,
     colors,
-    backdrop_images: extractBackdrops($, html, baseUrl),
+    backdrop_images: [...cssBackdrops, ...imgBackdrops],
     brand_name: extractBrandName($, domainName),
   };
 }
 
-// ── Logos ─────────────────────────────────────────────────────────────
+// ── Image extraction & classification ─────────────────────────────────
 
-async function extractLogos(
+interface ImageCandidate {
+  url: string;
+  alt?: string;
+  source: "favicon" | "apple-touch-icon" | "img" | "svg";
+  location: "header" | "footer" | "body";
+  hasLogoHint: boolean;
+  hasDomainMatch: boolean;
+  isInHeroSection: boolean;
+  resolution?: { width: number; height: number; aspect_ratio: number };
+}
+
+async function extractImages(
   $: cheerio.CheerioAPI,
   baseUrl: string,
   domainName: string
-): Promise<LogoAsset[]> {
-  const logos: LogoAsset[] = [];
+): Promise<{ logos: LogoAsset[]; backdrops: BackdropAsset[] }> {
+  const candidates: ImageCandidate[] = [];
   const seen = new Set<string>();
 
-  function add(
-    url: string | null,
-    alt: string | undefined,
-    type: LogoAsset["type"]
-  ) {
-    if (!url || seen.has(url)) return;
-    seen.add(url);
-    logos.push({ url, alt, type });
+  function addCandidate(c: Omit<ImageCandidate, "resolution">) {
+    if (!c.url || seen.has(c.url)) return;
+    seen.add(c.url);
+    candidates.push(c);
   }
+
+  // ── Step 1: Collect all image candidates ──
 
   // Favicons
   $('link[rel="icon"], link[rel="shortcut icon"]').each((_, el) => {
-    add(resolveUrl($(el).attr("href"), baseUrl), undefined, "favicon");
+    const url = resolveUrl($(el).attr("href"), baseUrl);
+    if (url) addCandidate({ url, source: "favicon", location: "header", hasLogoHint: false, hasDomainMatch: false, isInHeroSection: false });
   });
 
   // Apple touch icons
-  $(
-    'link[rel="apple-touch-icon"], link[rel="apple-touch-icon-precomposed"]'
-  ).each((_, el) => {
-    add(
-      resolveUrl($(el).attr("href"), baseUrl),
-      undefined,
-      "apple-touch-icon"
-    );
+  $('link[rel="apple-touch-icon"], link[rel="apple-touch-icon-precomposed"]').each((_, el) => {
+    const url = resolveUrl($(el).attr("href"), baseUrl);
+    if (url) addCandidate({ url, source: "apple-touch-icon", location: "header", hasLogoHint: false, hasDomainMatch: false, isInHeroSection: false });
   });
 
-  // <img> with "logo" in attributes — but only the SITE'S OWN logo
-  // Strategy: only pick images inside header/nav, or whose src contains the domain name
+  // All <img> tags
   $("img").each((_, el) => {
     const src = $(el).attr("src") || "";
+    const url = resolveUrl(src, baseUrl);
+    if (!url) return;
+
     const alt = $(el).attr("alt") || "";
     const cls = $(el).attr("class") || "";
     const id = $(el).attr("id") || "";
     const combined = `${src} ${alt} ${cls} ${id}`.toLowerCase();
 
-    if (!combined.includes("logo")) return;
-
-    // Skip images served through CDN image transformation pipelines
-    // (these are content/marketing images, not brand logos)
-    const CDN_IMAGE_PARAMS = ["w", "h", "q", "fit", "fm", "crop", "auto"];
-    try {
-      const params = new URL(resolveUrl(src, baseUrl) || "").searchParams;
-      if (CDN_IMAGE_PARAMS.some((p) => params.has(p))) return;
-    } catch {
-      // invalid URL, let it through for other filters to handle
-    }
-
-    // Accept if: inside header/nav, or filename contains the site's domain name
     const isInHeader = $(el).closest("header, nav, [role='banner']").length > 0;
     const isInFooter = $(el).closest("footer").length > 0;
-    const srcContainsDomain =
-      domainName && src.toLowerCase().includes(domainName);
-    const altContainsDomain =
-      domainName && alt.toLowerCase().includes(domainName);
+    const location = isInHeader ? "header" : isInFooter ? "footer" : "body";
 
-    if (isInHeader || isInFooter || srcContainsDomain || altContainsDomain) {
-      add(resolveUrl(src, baseUrl), alt || undefined, "img");
-    }
+    const hasLogoHint = combined.includes("logo");
+    const hasDomainMatch = !!(
+      (domainName && src.toLowerCase().includes(domainName)) ||
+      (domainName && alt.toLowerCase().includes(domainName))
+    );
+
+    const isInHeroSection = $(el).closest(
+      '[class*="hero"], [class*="banner"], [class*="backdrop"], [class*="jumbotron"], [class*="splash"]'
+    ).length > 0;
+
+    addCandidate({ url, alt: alt || undefined, source: "img", location, hasLogoHint, hasDomainMatch, isInHeroSection });
   });
 
-  // SVGs inside logo-like containers in header/nav/footer only
-  $("header, nav, footer, [role='banner']")
+  // Inline SVGs in logo-like containers in header/nav
+  $("header, nav, [role='banner']")
     .find('[class*="logo"], [id*="logo"], [aria-label*="logo"]')
     .each((_, el) => {
       const svg = $(el).find("svg").first();
       if (svg.length) {
         const svgHtml = $.html(svg);
         const dataUri = `data:image/svg+xml;base64,${Buffer.from(svgHtml).toString("base64")}`;
-        add(dataUri, undefined, "svg");
+        addCandidate({ url: dataUri, source: "svg", location: "header", hasLogoHint: true, hasDomainMatch: false, isInHeroSection: false });
       }
     });
 
-  // Probe dimensions for all non-data-URI logos
+  // ── Step 2: Probe dimensions ──
   await Promise.all(
-    logos.map(async (logo) => {
-      if (logo.url.startsWith("data:")) return;
+    candidates.map(async (c) => {
+      if (c.url.startsWith("data:")) return;
       try {
-        const result = await probe(logo.url, { timeout: 5000 });
-        logo.resolution = {
+        const result = await probe(c.url, { timeout: 5000 });
+        c.resolution = {
           width: result.width,
           height: result.height,
           aspect_ratio: +(result.width / result.height).toFixed(2),
         };
-      } catch {
-        // Keep original type without resolution if probe fails
-      }
+      } catch {}
     })
   );
 
-  // Reclassify img/svg logos based on dimensions
-  const filtered = logos.filter((logo) => {
-    // Only reclassify img and svg types
-    if (logo.type !== "img" && logo.type !== "svg") return true;
-    if (!logo.resolution) return true;
+  // ── Step 3: Classify into logos vs backdrops (two-pass) ──
+  const logos: LogoAsset[] = [];
+  const backdrops: BackdropAsset[] = [];
 
-    const { width, height, aspect_ratio } = logo.resolution;
+  // ── Pass 1: High-confidence logos + all backdrops ──
+  for (const c of candidates) {
+    const width = c.resolution?.width;
+    const height = c.resolution?.height;
+    const ar = c.resolution?.aspect_ratio;
 
-    // Remove very large images (likely og:image or hero)
-    if (width > 500) return false;
-
-    if (width <= 64 && height <= 64) {
-      logo.type = "icon";
-    } else if (width <= 256 && aspect_ratio >= 0.8 && aspect_ratio <= 1.2) {
-      logo.type = "icon";
-    } else if (width <= 256 && aspect_ratio > 1.5) {
-      logo.type = "logo";
-    } else if (width <= 500 && aspect_ratio > 1.5) {
-      logo.type = "logo";
+    // Favicons → always logo
+    if (c.source === "favicon") {
+      logos.push({ url: c.url, alt: c.alt, type: "favicon", resolution: c.resolution });
+      continue;
     }
 
-    return true;
-  });
+    // Apple-touch-icons → always logo
+    if (c.source === "apple-touch-icon") {
+      logos.push({ url: c.url, alt: c.alt, type: "apple-touch-icon", resolution: c.resolution });
+      continue;
+    }
 
-  return filtered;
+    // Inline SVG from header/nav → always logo
+    if (c.source === "svg") {
+      logos.push({ url: c.url, alt: c.alt, type: "svg", resolution: c.resolution });
+      continue;
+    }
+
+    // Header/nav <img> with logo hint or domain match, width ≤ 500 → logo
+    if (c.source === "img" && c.location === "header" && (c.hasLogoHint || c.hasDomainMatch)) {
+      if (!width || width <= 500) {
+        logos.push({ url: c.url, alt: c.alt, type: classifyLogoType(width, height, ar), resolution: c.resolution });
+        continue;
+      }
+    }
+
+    // Hero/banner section, width ≥ 400 → backdrop
+    if (c.isInHeroSection && width && width >= 400) {
+      backdrops.push({ url: c.url, description: "Hero/banner image" });
+      continue;
+    }
+
+    // Any location, width ≥ 800 → backdrop
+    if (width && width >= 800) {
+      backdrops.push({ url: c.url, description: "Large content image" });
+      continue;
+    }
+  }
+
+  // ── Pass 2: Low-confidence logos (only if none found in pass 1) ──
+  if (logos.length === 0) {
+    for (const c of candidates) {
+      if (c.source !== "img") continue;
+      const width = c.resolution?.width;
+      const height = c.resolution?.height;
+      const ar = c.resolution?.aspect_ratio;
+
+      // Footer with logo hint + domain match, width ≤ 500 → logo
+      if (c.location === "footer" && c.hasLogoHint && c.hasDomainMatch) {
+        if (!width || width <= 500) {
+          logos.push({ url: c.url, alt: c.alt, type: classifyLogoType(width, height, ar), resolution: c.resolution });
+          continue;
+        }
+      }
+
+      // Body with logo hint + domain match, width ≤ 500 → logo
+      if (c.location === "body" && c.hasLogoHint && c.hasDomainMatch) {
+        if (!width || width <= 500) {
+          logos.push({ url: c.url, alt: c.alt, type: classifyLogoType(width, height, ar), resolution: c.resolution });
+          continue;
+        }
+      }
+    }
+  }
+
+  return { logos, backdrops };
+}
+
+/** Classify a logo image as icon vs logo based on dimensions */
+function classifyLogoType(
+  width: number | undefined,
+  height: number | undefined,
+  aspectRatio: number | undefined
+): LogoAsset["type"] {
+  if (!width || !height || !aspectRatio) return "img";
+  if (width <= 64 && height <= 64) return "icon";
+  if (width <= 256 && aspectRatio >= 0.8 && aspectRatio <= 1.2) return "icon";
+  if (width <= 500 && aspectRatio > 1.5) return "logo";
+  return "img";
 }
 
 // ── Colors ───────────────────────────────────────────────────────────
@@ -431,7 +493,8 @@ function rgbToHex(r: number, g: number, b: number): string {
 const BG_IMAGE_RE =
   /background(?:-image)?\s*:[^;]*url\(["']?([^"')]+)["']?\)/gi;
 
-function extractBackdrops(
+/** Extract non-<img> backdrop images: og:image and CSS background-image */
+function extractCssBackdrops(
   $: cheerio.CheerioAPI,
   html: string,
   baseUrl: string
@@ -441,7 +504,6 @@ function extractBackdrops(
 
   function add(url: string | null, description?: string) {
     if (!url || seen.has(url)) return;
-    // Skip tiny assets like gradients, data URIs, or SVG icons
     if (url.startsWith("data:") || url.endsWith(".svg")) return;
     seen.add(url);
     backdrops.push({ url, description });
@@ -472,18 +534,6 @@ function extractBackdrops(
     while ((m = BG_IMAGE_RE.exec(style)) !== null) {
       add(resolveUrl(m[1], baseUrl), "Background image");
     }
-  });
-
-  // Large images in hero-like sections only
-  $(
-    '[class*="hero"] img, [class*="banner"] img, [class*="backdrop"] img, [class*="jumbotron"] img, [class*="splash"] img'
-  ).each((_, el) => {
-    const src = $(el).attr("src");
-    const alt = ($(el).attr("alt") || "").toLowerCase();
-    const cls = ($(el).attr("class") || "").toLowerCase();
-    if (alt.includes("logo") || cls.includes("logo")) return;
-
-    add(resolveUrl(src, baseUrl), "Hero/banner image");
   });
 
   return backdrops;
