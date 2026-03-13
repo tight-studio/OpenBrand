@@ -12,7 +12,7 @@
 
 Extract brand assets (logos, colors, backdrops, brand name) from any website URL.
 
-## As an npm package
+## As an [npm package](https://www.npmjs.com/package/openbrand)
 
 ```bash
 bun add openbrand
