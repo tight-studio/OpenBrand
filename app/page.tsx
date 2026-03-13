@@ -1,6 +1,6 @@
-import { redirect } from "next/navigation";
 import { UrlForm } from "@/components/url-form";
 import { createClient } from "@/lib/supabase/server";
+import { SignOutButton } from "@/components/sign-out-button";
 import { GetStartedTabs } from "@/components/get-started-tabs";
 
 export default async function Home({
@@ -13,10 +13,6 @@ export default async function Home({
   const {
     data: { user },
   } = await supabase.auth.getUser();
-
-  if (user) {
-    redirect("/dashboard");
-  }
 
   return (
     <div className="min-h-screen bg-neutral-50">
@@ -35,6 +31,17 @@ export default async function Home({
             </p>
           </div>
           <div className="flex items-center gap-4 text-sm">
+            {user && (
+              <>
+                <a
+                  href="/dashboard"
+                  className="px-3 py-1.5 rounded-lg border border-neutral-300 text-neutral-700 hover:bg-neutral-100 transition-colors font-medium"
+                >
+                  API Keys
+                </a>
+                <SignOutButton />
+              </>
+            )}
             <a
               href="https://github.com/ethanjyx/openbrand"
               target="_blank"
@@ -44,13 +51,14 @@ export default async function Home({
               <img
                 alt="GitHub stars"
                 src="https://img.shields.io/github/stars/ethanjyx/openbrand?style=social"
+                className="h-6"
               />
             </a>
           </div>
         </div>
         <UrlForm initialUrl={url} />
 
-        <GetStartedTabs />
+        <GetStartedTabs isLoggedIn={!!user} />
       </main>
       <footer className="max-w-4xl mx-auto px-6 pb-10 text-center text-sm text-neutral-400">
         OpenBrand is designed, built, and backed by{" "}

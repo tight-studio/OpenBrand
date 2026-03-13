@@ -1,11 +1,10 @@
-import { NextResponse } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 import { extractBrandAssets } from "@/src/scraper";
 import { getAuthenticatedUserId } from "@/lib/auth";
 import type { BrandExtractionResult, ExtractionResponse } from "@/src/types";
-export async function POST(request: Request) {
+export async function GET(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { url } = body;
+    const url = request.nextUrl.searchParams.get("url");
 
     if (!url || typeof url !== "string") {
       return NextResponse.json(

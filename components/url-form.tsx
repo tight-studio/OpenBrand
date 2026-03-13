@@ -26,11 +26,7 @@ export function UrlForm({ initialUrl }: { initialUrl?: string }) {
 
     setLoading(true);
     try {
-      const res = await fetch("/api/extract", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: normalized }),
-      });
+      const res = await fetch(`/api/extract?url=${encodeURIComponent(normalized)}`);
 
       const data: ExtractionResponse = await res.json();
 

@@ -41,6 +41,7 @@ export default async function DashboardPage() {
               <img
                 alt="GitHub stars"
                 src="https://img.shields.io/github/stars/ethanjyx/openbrand?style=social"
+                className="h-6"
               />
             </a>
             <SignOutButton />
