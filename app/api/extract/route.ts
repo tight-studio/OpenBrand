@@ -59,7 +59,14 @@ export async function GET(request: NextRequest) {
         .single();
 
       if (cached) {
-        const result = cached.result as BrandExtractionResult;
+        const raw = cached.result as BrandExtractionResult;
+        const result: BrandExtractionResult = {
+          brandName: raw.brandName ?? "",
+          logos: raw.logos ?? [],
+          colors: raw.colors ?? [],
+          backdrops: raw.backdrops ?? [],
+          fonts: raw.fonts ?? [],
+        };
 
         console.log(JSON.stringify({ event: "extract_cache_hit", url, source, user_id: userId, brandName: result.brandName }));
 
@@ -117,6 +124,7 @@ export async function GET(request: NextRequest) {
       logos: extracted.data.logos || [],
       colors: extracted.data.colors || [],
       backdrops: extracted.data.backdrop_images || [],
+      fonts: extracted.data.fonts || [],
     };
 
     console.log(JSON.stringify({
@@ -128,6 +136,7 @@ export async function GET(request: NextRequest) {
       logoCount: result.logos.length,
       colorCount: result.colors.length,
       backdropCount: result.backdrops.length,
+      fontCount: result.fonts.length,
     }));
 
     // Insert into brand_cache, then log

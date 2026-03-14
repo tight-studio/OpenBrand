@@ -19,11 +19,20 @@ export interface BackdropAsset {
   description?: string;
 }
 
+export interface FontAsset {
+  family: string;
+  /** Where to get the font (e.g. Google Fonts specimen or Fontshare page) */
+  url?: string;
+  /** Direct stylesheet or font file URL from the site (for download / open source) */
+  sourceUrl?: string;
+}
+
 export interface BrandExtractionResult {
   brandName: string;
   logos: LogoAsset[];
   colors: ColorAsset[];
   backdrops: BackdropAsset[];
+  fonts: FontAsset[];
 }
 
 export interface ExtractionResponse {

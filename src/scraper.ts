@@ -1,7 +1,14 @@
 import * as cheerio from "cheerio";
 import probe from "probe-image-size";
 import sharp from "sharp";
-import type { LogoAsset, ColorAsset, BackdropAsset } from "./types";
+import type { LogoAsset, ColorAsset, BackdropAsset, FontAsset } from "./types";
+
+/** Internal shape during extraction; we output only FontAsset (family + url?) */
+type InternalFont = {
+  family: string;
+  sourceUrl?: string;
+  source: "google_fonts" | "fontshare" | "private" | "unknown";
+};
 
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -37,8 +44,8 @@ export async function extractBrandAssets(url: string): Promise<ExtractionResult>
   }
 
   const data = await parseHtml(html, url);
-  if (data.logos.length === 0 && data.colors.length === 0 && data.backdrop_images.length === 0) {
-    return { ok: false, error: { code: "EMPTY_CONTENT", message: "The page loaded but no brand assets (logos, colors, or images) were found." } };
+  if (data.logos.length === 0 && data.colors.length === 0 && data.backdrop_images.length === 0 && data.fonts.length === 0) {
+    return { ok: false, error: { code: "EMPTY_CONTENT", message: "The page loaded but no brand assets (logos, colors, images, or fonts) were found." } };
   }
 
   return { ok: true, data };
@@ -143,6 +150,7 @@ async function parseHtml(
   logos: LogoAsset[];
   colors: ColorAsset[];
   backdrop_images: BackdropAsset[];
+  fonts: FontAsset[];
   brand_name: string;
 }> {
   const $ = cheerio.load(html);
@@ -151,11 +159,13 @@ async function parseHtml(
   const { logos, backdrops: imgBackdrops } = await extractImages($, baseUrl, domainName);
   const colors = await extractColors($, baseUrl, logos);
   const cssBackdrops = extractCssBackdrops($, html, baseUrl);
+  const fonts = await extractFonts($, html, baseUrl);
 
   return {
     logos,
     colors,
     backdrop_images: [...cssBackdrops, ...imgBackdrops],
+    fonts,
     brand_name: extractBrandName($, domainName),
   };
 }
@@ -593,6 +603,335 @@ function extractCssBackdrops(
   });
 
   return backdrops;
+}
+
+// ── Fonts ───────────────────────────────────────────────────────────
+
+const FONT_FACE_RE = /@font-face\s*\{([^}]*)\}/gi;
+const FONT_FAMILY_RE = /font-family\s*:\s*["']?([^"';}]+)["']?/i;
+const FONT_SRC_RE = /src\s*:\s*([^;]+);/i;
+const FONT_WEIGHT_RE = /font-weight\s*:\s*([^;]+);/i;
+const URL_RE = /url\s*\(\s*["']?([^"')]+)["']?\s*\)/g;
+/** Match font-family: "Name", sans-serif or font-family: Name, sans-serif (capture first name) */
+const FONT_FAMILY_DECL_RE = /font-family\s*:\s*(?:["']([^"']+)["']|([^,"';}\s][^,"';}]*))/gi;
+
+/** Generic font families – skip when extracting from CSS declarations (CSS keywords + common system stack names) */
+const GENERIC_FAMILIES = new Set(
+  [
+    "inherit", "initial", "unset",
+    "serif", "sans-serif", "monospace", "cursive", "fantasy",
+    "system-ui", "ui-serif", "ui-sans-serif", "ui-monospace", "ui-rounded",
+    "emoji", "math", "fangsong",
+  ].map((s) => s.toLowerCase())
+);
+
+const MAX_STYLESHEETS_TO_FETCH = 10;
+const STYLESHEET_FETCH_TIMEOUT_MS = 4000;
+
+/** Normalize font family: trim, strip quotes, take first in stack, reject generics. */
+function normalizeFamily(raw: string): string | null {
+  const trimmed = raw.trim().replace(/^["']|["']$/g, "").split(",")[0].trim();
+  if (!trimmed || trimmed.length < 2) return null;
+  if (GENERIC_FAMILIES.has(trimmed.toLowerCase())) return null;
+  return trimmed;
+}
+
+/**
+ * Clean build-time/hashed font names for display:
+ * __satoshi_e99f3e → Satoshi, __Instrument_Serif_315a98 → Instrument Serif,
+ * __Instrument_Serif_Fallback_315a98 → Instrument Serif
+ */
+function cleanFontFamilyDisplay(raw: string): string {
+  let s = raw.trim();
+  s = s.replace(/^__+/, "");
+  s = s.replace(/_Fallback(?:_[a-f0-9]+)?$/i, "");
+  s = s.replace(/_[a-f0-9]{5,}$/i, "");
+  s = s.replace(/_/g, " ").replace(/\s+/g, " ").trim();
+  if (!s) return raw;
+  return s.split(" ").map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(" ");
+}
+
+/** Classify font source from URL */
+function classifyFontSource(url: string, baseUrl: string): InternalFont["source"] {
+  const lower = url.toLowerCase();
+  if (lower.includes("fonts.gstatic.com") || lower.includes("fonts.googleapis.com")) return "google_fonts";
+  if (lower.includes("fontshare.com") || lower.includes("api.fontshare.com")) return "fontshare";
+  if (lower.includes("dafont.com") || lower.includes("fonts.cdnfonts.com")) return "unknown"; // treat as "find on web"
+  try {
+    const fontUrl = new URL(url, baseUrl);
+    const base = new URL(baseUrl);
+    if (fontUrl.origin === base.origin) return "private";
+  } catch {}
+  return "private";
+}
+
+/** Extract family names from Google Fonts stylesheet URL (css: family=A|B, css2: family=A&family=B) */
+function parseGoogleFontFamilies(href: string): string[] {
+  const families: string[] = [];
+  try {
+    const u = new URL(href, "https://fonts.googleapis.com");
+    const params = u.searchParams.getAll("family");
+    if (params.length === 0) {
+      const single = u.searchParams.get("family");
+      if (single) params.push(single);
+    }
+    for (const familyParam of params) {
+      const parts = familyParam.split("|");
+      for (const part of parts) {
+        const name = part.split(":")[0].trim().replace(/\+/g, " ");
+        const norm = normalizeFamily(name);
+        if (norm && !families.includes(norm)) families.push(norm);
+      }
+    }
+  } catch {}
+  return families;
+}
+
+/** Extract font family from Fontshare URL or default to null */
+function parseFontshareFamily(href: string): string | null {
+  try {
+    const u = new URL(href, "https://api.fontshare.com");
+    const path = u.pathname.replace(/^\//, "").split("/")[0];
+    if (path) return path.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  } catch {}
+  return null;
+}
+
+/** Fetch external stylesheet content (for parsing @font-face and font-family). */
+async function fetchStylesheet(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": USER_AGENT, Accept: "text/css,*/*;q=0.1" },
+      signal: AbortSignal.timeout(STYLESHEET_FETCH_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    return res.text();
+  } catch {
+    return null;
+  }
+}
+
+/** Parse CSS string for @font-face blocks; returns array of InternalFont with cleaned family. */
+function parseFontFaceFromCss(css: string, baseUrl: string): InternalFont[] {
+  const out: InternalFont[] = [];
+  FONT_FACE_RE.lastIndex = 0;
+  let block: RegExpExecArray | null;
+  while ((block = FONT_FACE_RE.exec(css)) !== null) {
+    const decl = block[1];
+    const familyMatch = decl.match(FONT_FAMILY_RE);
+    const rawFamily = familyMatch
+      ? normalizeFamily(familyMatch[1].trim().replace(/^["']|["']$/g, "").split(",")[0].trim())
+      : null;
+    if (!rawFamily) continue;
+    const family = cleanFontFamilyDisplay(rawFamily);
+
+    const srcMatch = decl.match(FONT_SRC_RE);
+    let source: InternalFont["source"] = "private";
+    let sourceUrl: string | undefined;
+    if (srcMatch) {
+      URL_RE.lastIndex = 0;
+      let urlMatch: RegExpExecArray | null;
+      while ((urlMatch = URL_RE.exec(srcMatch[1])) !== null) {
+        const url = urlMatch[1].trim();
+        if (url.startsWith("data:")) continue;
+        const resolved = resolveUrl(url, baseUrl);
+        if (resolved) {
+          sourceUrl = resolved;
+          source = classifyFontSource(resolved, baseUrl);
+          break;
+        }
+      }
+    }
+    out.push({ family, sourceUrl, source });
+  }
+  return out;
+}
+
+/** Parse CSS string for font-family declarations (first name in stack only). Returns all occurrences for usage counting. */
+function parseFontFamilyDeclarationsFromCss(css: string): string[] {
+  const families: string[] = [];
+  FONT_FAMILY_DECL_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = FONT_FAMILY_DECL_RE.exec(css)) !== null) {
+    const name = (m[1] ?? m[2] ?? "").trim();
+    const norm = normalizeFamily(name);
+    if (norm) families.push(norm);
+  }
+  return families;
+}
+
+/** Prefer higher-confidence source when merging (google_fonts > fontshare > private > unknown). */
+function sourcePriority(s: InternalFont["source"]): number {
+  switch (s) {
+    case "google_fonts": return 3;
+    case "fontshare": return 2;
+    case "private": return 1;
+    default: return 0;
+  }
+}
+
+/** Google Fonts specimen URL for a family name */
+function googleFontsSpecimenUrl(family: string): string {
+  const slug = encodeURIComponent(family).replace(/%20/g, "+");
+  return `https://fonts.google.com/specimen/${slug}`;
+}
+
+/** Try to resolve font from Google Fonts; returns specimen URL if the font exists. */
+async function resolveFontUrlFromGoogle(family: string): Promise<string | null> {
+  try {
+    const encoded = encodeURIComponent(family).replace(/%20/g, "+");
+    const res = await fetch(
+      `https://fonts.googleapis.com/css2?family=${encoded}&display=swap`,
+      { headers: { "User-Agent": USER_AGENT }, signal: AbortSignal.timeout(3000) }
+    );
+    if (!res.ok) return null;
+    const css = await res.text();
+    if (!css.includes("@font-face")) return null;
+    return googleFontsSpecimenUrl(family);
+  } catch {
+    return null;
+  }
+}
+
+async function extractFonts(
+  $: cheerio.CheerioAPI,
+  html: string,
+  baseUrl: string
+): Promise<FontAsset[]> {
+  const byFamily = new Map<string, InternalFont>();
+  const countByKey = new Map<string, number>();
+
+  function ensureFont(asset: InternalFont) {
+    const key = asset.family.toLowerCase();
+    const existing = byFamily.get(key);
+    if (!existing) {
+      byFamily.set(key, asset);
+      return;
+    }
+    const ep = sourcePriority(existing.source);
+    const np = sourcePriority(asset.source);
+    if (np > ep) {
+      byFamily.set(key, asset);
+      return;
+    }
+    if (np < ep) return;
+    // Same priority: never overwrite when we'd lose sourceUrl (website font file URL)
+    if (existing.sourceUrl && !asset.sourceUrl) return;
+    byFamily.set(key, asset);
+  }
+
+  function countFont(family: string) {
+    const key = family.toLowerCase();
+    countByKey.set(key, (countByKey.get(key) ?? 0) + 1);
+  }
+
+  // ── 1. Google Fonts & Fontshare from <link> ──
+  $('link[rel="stylesheet"]').each((_, el) => {
+    const href = $(el).attr("href");
+    if (!href) return;
+    const resolved = resolveUrl(href, baseUrl);
+    if (!resolved) return;
+    const lower = resolved.toLowerCase();
+    if (lower.includes("fonts.googleapis.com")) {
+      const families = parseGoogleFontFamilies(resolved);
+      for (const name of families) {
+        const family = cleanFontFamilyDisplay(name);
+        if (family) {
+          ensureFont({ family, sourceUrl: resolved, source: "google_fonts" });
+          countFont(family);
+        }
+      }
+    }
+    if (lower.includes("fontshare.com") || lower.includes("api.fontshare.com")) {
+      const name = parseFontshareFamily(resolved) || "Fontshare font";
+      const family = name ? cleanFontFamilyDisplay(name) : null;
+      if (family) {
+        ensureFont({ family, sourceUrl: resolved, source: "fontshare" });
+        countFont(family);
+      }
+    }
+  });
+
+  // ── 2. Inline <style>: @font-face and font-family (count every occurrence) ──
+  $("style").each((_, el) => {
+    const css = $(el).html() || "";
+    for (const asset of parseFontFaceFromCss(css, baseUrl)) {
+      ensureFont(asset);
+      countFont(asset.family);
+    }
+    for (const name of parseFontFamilyDeclarationsFromCss(css)) {
+      const family = cleanFontFamilyDisplay(name);
+      ensureFont({ family, source: "unknown" });
+      countFont(family);
+    }
+  });
+
+  // ── 3. Collect external stylesheet URLs ──
+  const urlSet = new Set<string>();
+  $('link[rel="stylesheet"]').each((_, el) => {
+    const href = $(el).attr("href");
+    if (!href) return;
+    const resolved = resolveUrl(href, baseUrl);
+    if (!resolved || resolved.startsWith("data:")) return;
+    const lower = resolved.toLowerCase();
+    if (lower.includes("fonts.googleapis.com") || lower.includes("fontshare.com")) return;
+    urlSet.add(resolved);
+  });
+  const IMPORT_RE = /@import\s+(?:url\s*\(\s*["']?([^"')]+)["']?\s*\)|["']([^"']+)["'])\s*;?/gi;
+  $("style").each((_, el) => {
+    const css = $(el).html() || "";
+    IMPORT_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = IMPORT_RE.exec(css)) !== null) {
+      const url = m[1] ?? m[2];
+      if (!url) continue;
+      const resolved = resolveUrl(url.trim(), baseUrl);
+      if (resolved && !resolved.startsWith("data:")) urlSet.add(resolved);
+    }
+  });
+  const toFetch = Array.from(urlSet).slice(0, MAX_STYLESHEETS_TO_FETCH);
+
+  // ── 4. Fetch and parse external stylesheets (resolve font URLs against stylesheet URL so /_next/static/fonts/font.woff2 works) ──
+  const fetched = await Promise.allSettled(toFetch.map((url) => fetchStylesheet(url)));
+  fetched.forEach((result, i) => {
+    if (result.status !== "fulfilled" || !result.value) return;
+    const css = result.value;
+    const stylesheetBaseUrl = toFetch[i] ?? baseUrl;
+    for (const asset of parseFontFaceFromCss(css, stylesheetBaseUrl)) {
+      ensureFont(asset);
+      countFont(asset.family);
+    }
+    for (const name of parseFontFamilyDeclarationsFromCss(css)) {
+      const family = cleanFontFamilyDisplay(name);
+      ensureFont({ family, source: "unknown" });
+      countFont(family);
+    }
+  });
+
+  // ── 5. Build FontAsset[] sorted by usage (most used first), with url and sourceUrl ──
+  const list = Array.from(byFamily.entries())
+    .map(([key, f]) => ({ f, count: countByKey.get(key) ?? 1 }))
+    .sort((a, b) => b.count - a.count)
+    .map(({ f }) => f);
+
+  const out: FontAsset[] = [];
+  for (const f of list) {
+    let url: string | undefined;
+    if (f.source === "google_fonts") {
+      url = googleFontsSpecimenUrl(f.family);
+    } else if (f.source === "fontshare" && f.sourceUrl) {
+      url = f.sourceUrl;
+    } else {
+      const resolved = await resolveFontUrlFromGoogle(f.family);
+      if (resolved) url = resolved;
+    }
+    out.push({
+      family: f.family,
+      ...(url && { url }),
+      ...(f.sourceUrl && { sourceUrl: f.sourceUrl }),
+    });
+  }
+  return out;
 }
 
 // ── Brand name ───────────────────────────────────────────────────────
