@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { CodeExampleTabs } from "./code-example-tabs";
 
 interface ApiKey {
   id: string;
@@ -154,12 +155,7 @@ export function ApiKeyManager() {
       {/* Usage example */}
       <div>
         <h2 className="text-lg font-semibold text-neutral-900 mb-4">Usage</h2>
-        <pre className="px-4 py-3 rounded-xl bg-neutral-900 text-neutral-100 text-sm overflow-x-auto">
-          <code>{`curl -X POST https://openbrand.sh/api/extract \\
-  -H "Authorization: Bearer YOUR_API_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d '{"url": "https://stripe.com"}'`}</code>
-        </pre>
+        <CodeExampleTabs />
       </div>
     </div>
   );

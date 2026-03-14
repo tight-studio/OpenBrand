@@ -53,7 +53,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <Script
         src="https://cloud.umami.is/script.js"
         data-website-id="87ed8af0-86f0-4fcf-8171-bc82e25e6d10"
@@ -61,6 +61,7 @@ export default function RootLayout({
       />
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        suppressHydrationWarning
       >
         {children}
       </body>

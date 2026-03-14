@@ -25,6 +25,15 @@ export async function GET(request: NextRequest) {
 
     const hasBearer = request.headers.get("authorization")?.startsWith("Bearer ");
     const userId = await getAuthenticatedUserId(request);
+
+    // If a Bearer token was provided but didn't resolve to a user, reject it
+    if (hasBearer && !userId) {
+      return NextResponse.json(
+        { success: false, error: "Invalid API key" } satisfies ExtractionResponse,
+        { status: 401 }
+      );
+    }
+
     const source = userId ? (hasBearer ? "api_key" : "session") : "anonymous";
 
     console.log(JSON.stringify({ event: "extract_request", url, source, user_id: userId, timestamp: new Date().toISOString() }));

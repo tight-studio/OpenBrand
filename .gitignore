@@ -41,6 +41,9 @@ yarn-error.log*
 # extraction results
 /data
 
+# supabase
+supabase/.temp/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
