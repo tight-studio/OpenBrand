@@ -30,4 +30,5 @@ export interface ExtractionResponse {
   success: boolean;
   data?: BrandExtractionResult;
   error?: string;
+  errorCode?: "ACCESS_BLOCKED" | "NOT_FOUND" | "SERVER_ERROR" | "NETWORK_ERROR" | "EMPTY_CONTENT";
 }

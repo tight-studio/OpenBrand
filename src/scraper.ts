@@ -8,28 +8,72 @@ const USER_AGENT =
 
 const MIN_BODY_LENGTH = 500;
 
-export async function extractBrandAssets(url: string) {
-  const { html: directHtml, ok } = await fetchPage(url);
+export type ExtractionError = {
+  code: "ACCESS_BLOCKED" | "NOT_FOUND" | "SERVER_ERROR" | "NETWORK_ERROR" | "EMPTY_CONTENT";
+  status?: number;
+  message: string;
+};
 
-  let html = directHtml;
+export type ExtractionResult =
+  | { ok: true; data: Awaited<ReturnType<typeof parseHtml>> }
+  | { ok: false; error: ExtractionError };
+
+export async function extractBrandAssets(url: string): Promise<ExtractionResult> {
+  const page = await fetchPage(url);
+
+  let html = page.html;
   const $ = cheerio.load(html);
   const bodyText = $("body").text().trim();
 
   // Fall back to Jina when the direct fetch failed (non-2xx) or returned too little content
-  if (!ok || bodyText.length < MIN_BODY_LENGTH) {
+  if (!page.ok || bodyText.length < MIN_BODY_LENGTH) {
     const jinaHtml = await fetchViaJina(url);
     if (jinaHtml) {
       html = jinaHtml;
-    } else if (!ok) {
+    } else if (!page.ok) {
       // Direct fetch was non-2xx and Jina also failed
-      return null;
+      return { ok: false, error: classifyHttpError(page.status) };
     }
   }
 
-  return parseHtml(html, url);
+  const data = await parseHtml(html, url);
+  if (data.logos.length === 0 && data.colors.length === 0 && data.backdrop_images.length === 0) {
+    return { ok: false, error: { code: "EMPTY_CONTENT", message: "The page loaded but no brand assets (logos, colors, or images) were found." } };
+  }
+
+  return { ok: true, data };
 }
 
-async function fetchPage(url: string): Promise<{ html: string; ok: boolean }> {
+function classifyHttpError(status: number): ExtractionError {
+  if (status === 403) {
+    return {
+      code: "ACCESS_BLOCKED",
+      status,
+      message: "The website blocked the request. This usually means Cloudflare or bot protection is active on the target site - not an issue with your OpenBrand API key.",
+    };
+  }
+  if (status === 404) {
+    return {
+      code: "NOT_FOUND",
+      status,
+      message: "The page was not found on the target website (404).",
+    };
+  }
+  if (status >= 500) {
+    return {
+      code: "SERVER_ERROR",
+      status,
+      message: `The target website returned a server error (${status}).`,
+    };
+  }
+  return {
+    code: "ACCESS_BLOCKED",
+    status,
+    message: `The website returned an error (HTTP ${status}) and the fallback fetcher also failed.`,
+  };
+}
+
+async function fetchPage(url: string): Promise<{ html: string; ok: boolean; status: number }> {
   const res = await fetch(url, {
     headers: {
       "User-Agent": USER_AGENT,
@@ -40,7 +84,7 @@ async function fetchPage(url: string): Promise<{ html: string; ok: boolean }> {
     redirect: "follow",
   });
 
-  return { html: await res.text(), ok: res.ok };
+  return { html: await res.text(), ok: res.ok, status: res.status };
 }
 
 async function fetchViaJina(url: string): Promise<string | null> {

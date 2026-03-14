@@ -7,7 +7,7 @@ import { BrandResults } from "./brand-results";
 export function UrlForm({ initialUrl }: { initialUrl?: string }) {
   const [url, setUrl] = useState(initialUrl ?? "");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ message: string; code?: string } | null>(null);
   const [result, setResult] = useState<BrandExtractionResult | null>(null);
   const autoTriggered = useRef(false);
 
@@ -31,13 +31,13 @@ export function UrlForm({ initialUrl }: { initialUrl?: string }) {
       const data: ExtractionResponse = await res.json();
 
       if (!data.success) {
-        setError(data.error || "Extraction failed");
+        setError({ message: data.error || "Extraction failed", code: data.errorCode });
         return;
       }
 
       setResult(data.data!);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Network error");
+      setError({ message: err instanceof Error ? err.message : "Network error", code: "NETWORK_ERROR" });
     } finally {
       setLoading(false);
     }
@@ -102,7 +102,22 @@ export function UrlForm({ initialUrl }: { initialUrl?: string }) {
 
       {error && (
         <div className="px-4 py-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm">
-          {error}
+          {error.code === "ACCESS_BLOCKED" && (
+            <p className="font-medium mb-1">Website Blocked Access</p>
+          )}
+          {error.code === "NOT_FOUND" && (
+            <p className="font-medium mb-1">Page Not Found</p>
+          )}
+          {error.code === "SERVER_ERROR" && (
+            <p className="font-medium mb-1">Target Website Error</p>
+          )}
+          {error.code === "NETWORK_ERROR" && (
+            <p className="font-medium mb-1">Connection Failed</p>
+          )}
+          {error.code === "EMPTY_CONTENT" && (
+            <p className="font-medium mb-1">No Brand Assets Found</p>
+          )}
+          <p>{error.message}</p>
         </div>
       )}
 

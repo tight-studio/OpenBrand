@@ -87,9 +87,9 @@ export async function GET(request: NextRequest) {
     // Cache miss (or fresh=true): scrape
     const extracted = await extractBrandAssets(url);
 
-    if (!extracted) {
-      const errorMsg = "Could not extract any brand assets from this URL";
-      console.log(JSON.stringify({ event: "extract_empty", url, source, user_id: userId }));
+    if (!extracted.ok) {
+      const { error: extractionError } = extracted;
+      console.log(JSON.stringify({ event: "extract_failed", url, source, user_id: userId, error_code: extractionError.code, status: extractionError.status }));
 
       // Log failed extraction (no brand_cache row)
       supabase
@@ -101,21 +101,22 @@ export async function GET(request: NextRequest) {
           source,
           cache_hit: false,
           success: false,
-          error: errorMsg,
+          error: extractionError.message,
         })
         .then();
 
+      const httpStatus = extractionError.code === "NOT_FOUND" ? 422 : extractionError.code === "EMPTY_CONTENT" ? 422 : 502;
       return NextResponse.json(
-        { success: false, error: errorMsg } satisfies ExtractionResponse,
-        { status: 422 }
+        { success: false, error: extractionError.message, errorCode: extractionError.code } satisfies ExtractionResponse,
+        { status: httpStatus }
       );
     }
 
     const result: BrandExtractionResult = {
-      brandName: extracted.brand_name || "",
-      logos: extracted.logos || [],
-      colors: extracted.colors || [],
-      backdrops: extracted.backdrop_images || [],
+      brandName: extracted.data.brand_name || "",
+      logos: extracted.data.logos || [],
+      colors: extracted.data.colors || [],
+      backdrops: extracted.data.backdrop_images || [],
     };
 
     console.log(JSON.stringify({
