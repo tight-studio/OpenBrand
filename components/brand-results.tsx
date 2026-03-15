@@ -5,6 +5,7 @@ import type { BrandExtractionResult } from "@/src/types";
 import { ColorPalette } from "./color-palette";
 import { LogoDisplay } from "./logo-display";
 import { BackdropGallery } from "./backdrop-gallery";
+import { FontDisplay } from "./font-display";
 import { JsonView } from "./json-view";
 
 export function BrandResults({ data }: { data: BrandExtractionResult }) {
@@ -48,6 +49,7 @@ export function BrandResults({ data }: { data: BrandExtractionResult }) {
         <>
           <LogoDisplay logos={data.logos} />
           <ColorPalette colors={data.colors} />
+          <FontDisplay fonts={data.fonts} />
           <BackdropGallery backdrops={data.backdrops} />
         </>
       ) : (

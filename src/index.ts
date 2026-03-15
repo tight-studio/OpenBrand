@@ -4,4 +4,5 @@ export type {
   LogoAsset,
   ColorAsset,
   BackdropAsset,
+  FontAsset,
 } from "./types";

@@ -19,11 +19,21 @@ export interface BackdropAsset {
   description?: string;
 }
 
+export interface FontAsset {
+  family: string;
+  role: "heading" | "body";
+  source: "google" | "system" | "custom";
+  weights: number[];
+  googleFontsUrl?: string;
+  fallbacks: string[];
+}
+
 export interface BrandExtractionResult {
   brandName: string;
   logos: LogoAsset[];
   colors: ColorAsset[];
   backdrops: BackdropAsset[];
+  fonts: FontAsset[];
 }
 
 export interface ExtractionResponse {

@@ -117,6 +117,7 @@ export async function GET(request: NextRequest) {
       logos: extracted.data.logos || [],
       colors: extracted.data.colors || [],
       backdrops: extracted.data.backdrop_images || [],
+      fonts: extracted.data.fonts || [],
     };
 
     console.log(JSON.stringify({
@@ -128,6 +129,7 @@ export async function GET(request: NextRequest) {
       logoCount: result.logos.length,
       colorCount: result.colors.length,
       backdropCount: result.backdrops.length,
+      fontCount: result.fonts.length,
     }));
 
     // Insert into brand_cache, then log

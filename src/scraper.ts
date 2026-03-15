@@ -1,7 +1,7 @@
 import * as cheerio from "cheerio";
 import probe from "probe-image-size";
 import sharp from "sharp";
-import type { LogoAsset, ColorAsset, BackdropAsset } from "./types";
+import type { LogoAsset, ColorAsset, BackdropAsset, FontAsset } from "./types";
 
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -82,6 +82,7 @@ async function fetchPage(url: string): Promise<{ html: string; ok: boolean; stat
       "Accept-Language": "en-US,en;q=0.5",
     },
     redirect: "follow",
+    signal: AbortSignal.timeout(15_000),
   });
 
   return { html: await res.text(), ok: res.ok, status: res.status };
@@ -94,6 +95,7 @@ async function fetchViaJina(url: string): Promise<string | null> {
         Accept: "text/html",
         "X-Return-Format": "html",
       },
+      signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) return null;
     return res.text();
@@ -143,6 +145,7 @@ async function parseHtml(
   logos: LogoAsset[];
   colors: ColorAsset[];
   backdrop_images: BackdropAsset[];
+  fonts: FontAsset[];
   brand_name: string;
 }> {
   const $ = cheerio.load(html);
@@ -151,11 +154,13 @@ async function parseHtml(
   const { logos, backdrops: imgBackdrops } = await extractImages($, baseUrl, domainName);
   const colors = await extractColors($, baseUrl, logos);
   const cssBackdrops = extractCssBackdrops($, html, baseUrl);
+  const fonts = await extractFonts($, html, baseUrl);
 
   return {
     logos,
     colors,
     backdrop_images: [...cssBackdrops, ...imgBackdrops],
+    fonts,
     brand_name: extractBrandName($, domainName),
   };
 }
@@ -593,6 +598,254 @@ function extractCssBackdrops(
   });
 
   return backdrops;
+}
+
+// ── Fonts ─────────────────────────────────────────────────────────────
+
+const SYSTEM_FONTS = new Set([
+  "arial", "helvetica", "helvetica neue", "times new roman", "times",
+  "georgia", "verdana", "tahoma", "trebuchet ms", "courier new", "courier",
+  "system-ui", "-apple-system", "blinkmacsystemfont", "segoe ui",
+  "sans-serif", "serif", "monospace", "cursive", "fantasy", "ui-sans-serif",
+  "ui-serif", "ui-monospace", "ui-rounded",
+]);
+
+const HEADING_SELECTORS = /\bh[1-6]\b/i;
+const BODY_SELECTORS = /\b(body|html|p|main|article|\*)\b/i;
+
+interface FontInfo {
+  family: string;
+  weights: Set<number>;
+  isGoogle: boolean;
+  googleUrl: string | null;
+  fallbacks: string[];
+  appliedTo: Set<string>;
+}
+
+/** Parse a Google Fonts URL (css or css2 API) into family names and weights */
+function parseGoogleFontsUrl(url: string): Array<{ family: string; weights: number[] }> {
+  const results: Array<{ family: string; weights: number[] }> = [];
+  try {
+    const u = new URL(url);
+    const families = u.searchParams.getAll("family");
+    for (const raw of families) {
+      // css2: "Inter:wght@400;700" or "Inter:wght@400..700"
+      // css:  "Inter:400,700" or just "Inter"
+      const colonIdx = raw.indexOf(":");
+      const name = colonIdx === -1 ? raw : raw.slice(0, colonIdx);
+      const spec = colonIdx === -1 ? "" : raw.slice(colonIdx + 1);
+
+      const weights: number[] = [];
+      // Match numeric weight values
+      const weightMatches = spec.match(/\d{3}/g);
+      if (weightMatches) {
+        for (const w of weightMatches) weights.push(parseInt(w, 10));
+      }
+      if (weights.length === 0) weights.push(400);
+
+      results.push({ family: name.replace(/\+/g, " "), weights });
+    }
+  } catch {
+    // Malformed URL — skip
+  }
+  return results;
+}
+
+/** Parse a font-family CSS value into [primary, ...fallbacks] */
+function parseFontStack(value: string): string[] {
+  return value
+    .replace(/\s*!important\s*/gi, "")
+    .split(",")
+    .map((f) => f.trim().replace(/^["']|["']$/g, ""))
+    .filter(Boolean);
+}
+
+function getOrCreateFont(map: Map<string, FontInfo>, family: string): FontInfo {
+  const key = family.toLowerCase();
+  let info = map.get(key);
+  if (!info) {
+    info = { family, weights: new Set(), isGoogle: false, googleUrl: null, fallbacks: [], appliedTo: new Set() };
+    map.set(key, info);
+  }
+  return info;
+}
+
+async function extractFonts($: cheerio.CheerioAPI, html: string, baseUrl: string): Promise<FontAsset[]> {
+  const fonts = new Map<string, FontInfo>();
+
+  // ── Phase A: Google Fonts via <link> tags ──
+  $('link[href*="fonts.googleapis.com"]').each((_, el) => {
+    const href = $(el).attr("href");
+    if (!href) return;
+    for (const { family, weights } of parseGoogleFontsUrl(href)) {
+      const info = getOrCreateFont(fonts, family);
+      info.isGoogle = true;
+      info.googleUrl = href;
+      for (const w of weights) info.weights.add(w);
+    }
+  });
+
+  // ── Phase B: Google Fonts via @import in <style> ──
+  const importRe = /@import\s+url\(["']?(https?:\/\/fonts\.googleapis\.com\/[^"')]+)["']?\)/gi;
+  $("style").each((_, el) => {
+    const css = $(el).text();
+    importRe.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = importRe.exec(css)) !== null) {
+      for (const { family, weights } of parseGoogleFontsUrl(m[1])) {
+        const info = getOrCreateFont(fonts, family);
+        info.isGoogle = true;
+        info.googleUrl = m![1];
+        for (const w of weights) info.weights.add(w);
+      }
+    }
+  });
+
+  // ── Phase C: Fetch external stylesheets for @font-face and font-family ──
+  const cssUrls: string[] = [];
+  $('link[rel="stylesheet"]').each((_, el) => {
+    const href = $(el).attr("href");
+    if (!href) return;
+    // Skip Google Fonts (handled in Phase A)
+    if (href.includes("fonts.googleapis.com")) return;
+    const resolved = resolveUrl(href, baseUrl);
+    if (resolved) cssUrls.push(resolved);
+  });
+
+  const externalCssTexts = await Promise.all(
+    cssUrls.slice(0, 5).map(async (url) => {
+      try {
+        const res = await fetch(url, {
+          headers: { "User-Agent": USER_AGENT },
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!res.ok) return "";
+        return res.text();
+      } catch {
+        return "";
+      }
+    })
+  );
+
+  // Combine inline <style> text with external CSS
+  const inlineStyleText = $("style").map((_, el) => $(el).text()).get().join("\n");
+  const styleText = inlineStyleText + "\n" + externalCssTexts.join("\n");
+
+  // ── Phase D: @font-face declarations ──
+  const fontFaceRe = /@font-face\s*\{([^}]+)\}/gi;
+  fontFaceRe.lastIndex = 0;
+  let ff: RegExpExecArray | null;
+  while ((ff = fontFaceRe.exec(styleText)) !== null) {
+    const block = ff[1];
+    const familyMatch = block.match(/font-family\s*:\s*["']?([^"';]+)/i);
+    if (!familyMatch) continue;
+    const family = familyMatch[1].trim();
+    const info = getOrCreateFont(fonts, family);
+    const weightMatch = block.match(/font-weight\s*:\s*(\d{3})/i);
+    if (weightMatch) info.weights.add(parseInt(weightMatch[1], 10));
+  }
+
+  // ── Phase E: font-family usage in CSS rules ──
+  const ruleRe = /([^{}@]+)\{([^}]*font-family\s*:[^}]+)\}/gi;
+  ruleRe.lastIndex = 0;
+  let rule: RegExpExecArray | null;
+  while ((rule = ruleRe.exec(styleText)) !== null) {
+    const selector = rule[1].trim();
+    const body = rule[2];
+    const ffMatch = body.match(/font-family\s*:\s*([^;]+)/i);
+    if (!ffMatch) continue;
+    const stack = parseFontStack(ffMatch[1]);
+    if (stack.length === 0) continue;
+
+    const primary = stack[0];
+    const info = getOrCreateFont(fonts, primary);
+    info.appliedTo.add(selector);
+    // Only set fallbacks if we haven't yet (first occurrence wins)
+    if (info.fallbacks.length === 0 && stack.length > 1) {
+      info.fallbacks = stack.slice(1);
+    }
+  }
+
+  // ── Phase F: Inline styles on key elements ──
+  $("body, h1, h2, h3, h4, h5, h6, p, main, article").each((_, el) => {
+    const style = $(el).attr("style");
+    if (!style) return;
+    const ffMatch = style.match(/font-family\s*:\s*([^;]+)/i);
+    if (!ffMatch) return;
+    const stack = parseFontStack(ffMatch[1]);
+    if (stack.length === 0) return;
+    const tagName = (el as { tagName?: string }).tagName?.toLowerCase() || "";
+    const info = getOrCreateFont(fonts, stack[0]);
+    info.appliedTo.add(tagName);
+    if (info.fallbacks.length === 0 && stack.length > 1) {
+      info.fallbacks = stack.slice(1);
+    }
+  });
+
+  // ── Phase G: Classify and build results ──
+  const results: FontAsset[] = [];
+  for (const [key, info] of fonts) {
+    if (SYSTEM_FONTS.has(key)) continue;
+    // Skip CSS variable references, keywords, and empty names
+    if (key.startsWith("var(") || key.length === 0) continue;
+    if (key === "inherit" || key === "initial" || key === "unset" || key === "revert") continue;
+
+    // Determine source
+    let source: FontAsset["source"];
+    if (info.isGoogle) {
+      source = "google";
+    } else if (fonts.has(key) && info.weights.size > 0 && !info.isGoogle) {
+      // Has @font-face entries → custom
+      source = "custom";
+    } else {
+      source = "custom";
+    }
+
+    // Determine role from selectors
+    const selectors = [...info.appliedTo].join(" ");
+    const isHeading = HEADING_SELECTORS.test(selectors);
+    const isBody = BODY_SELECTORS.test(selectors);
+
+    if (isHeading && isBody) {
+      // Same font for both — emit as body
+      results.push({
+        family: info.family,
+        role: "body",
+        source,
+        weights: [...info.weights].sort((a, b) => a - b),
+        ...(info.isGoogle && info.googleUrl ? { googleFontsUrl: info.googleUrl } : {}),
+        fallbacks: info.fallbacks,
+      });
+    } else if (isHeading) {
+      results.push({
+        family: info.family,
+        role: "heading",
+        source,
+        weights: [...info.weights].sort((a, b) => a - b),
+        ...(info.isGoogle && info.googleUrl ? { googleFontsUrl: info.googleUrl } : {}),
+        fallbacks: info.fallbacks,
+      });
+    } else {
+      // Default to body
+      results.push({
+        family: info.family,
+        role: "body",
+        source,
+        weights: [...info.weights].sort((a, b) => a - b),
+        ...(info.isGoogle && info.googleUrl ? { googleFontsUrl: info.googleUrl } : {}),
+        fallbacks: info.fallbacks,
+      });
+    }
+  }
+
+  // Default weights if empty
+  for (const f of results) {
+    if (f.weights.length === 0) f.weights = [400];
+  }
+
+  // Sort: heading first, then body. Cap at 4.
+  results.sort((a, b) => (a.role === "heading" ? -1 : 1) - (b.role === "heading" ? -1 : 1));
+  return results.slice(0, 4);
 }
 
 // ── Brand name ───────────────────────────────────────────────────────

@@ -3,6 +3,8 @@ import { extractBrandAssets } from "../src";
 
 const VALID_LOGO_TYPES = ["img", "svg", "favicon", "apple-touch-icon", "icon", "logo"];
 const VALID_COLOR_USAGES = ["primary", "secondary", "accent", "background", "text"];
+const VALID_FONT_ROLES = ["heading", "body"];
+const VALID_FONT_SOURCES = ["google", "system", "custom"];
 
 describe("asset shape validation", () => {
   // Extract once and share across tests
@@ -68,6 +70,37 @@ describe("asset shape validation", () => {
 
       if (backdrop.description !== undefined) {
         expect(typeof backdrop.description).toBe("string");
+      }
+    }
+  });
+
+  test("FontAsset shape — family is string, role and source are known values", () => {
+    // fonts array must exist (may be empty for some sites)
+    expect(Array.isArray(data.fonts)).toBe(true);
+
+    for (const font of data.fonts) {
+      expect(font.family).toBeString();
+      expect(font.family.length).toBeGreaterThan(0);
+
+      expect(VALID_FONT_ROLES).toContain(font.role);
+      expect(VALID_FONT_SOURCES).toContain(font.source);
+
+      expect(Array.isArray(font.weights)).toBe(true);
+      expect(font.weights.length).toBeGreaterThanOrEqual(1);
+      for (const w of font.weights) {
+        expect(typeof w).toBe("number");
+        expect(w).toBeGreaterThanOrEqual(100);
+        expect(w).toBeLessThanOrEqual(900);
+      }
+
+      expect(Array.isArray(font.fallbacks)).toBe(true);
+      for (const f of font.fallbacks) {
+        expect(typeof f).toBe("string");
+      }
+
+      if (font.source === "google") {
+        expect(font.googleFontsUrl).toBeDefined();
+        expect(font.googleFontsUrl).toContain("fonts.googleapis.com");
       }
     }
   });
