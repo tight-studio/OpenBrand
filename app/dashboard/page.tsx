@@ -35,14 +35,14 @@ export default async function DashboardPage() {
           <div className="flex shrink-0 items-center gap-4 text-sm">
             <SignOutButton />
             <a
-              href="https://github.com/ethanjyx/openbrand"
+              href="https://github.com/tight-studio/openbrand"
               target="_blank"
               rel="noopener noreferrer"
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 alt="GitHub stars"
-                src="https://img.shields.io/github/stars/ethanjyx/openbrand?style=social"
+                src="https://img.shields.io/github/stars/tight-studio/openbrand?style=social"
                 className="h-6 w-auto"
               />
             </a>

@@ -121,7 +121,7 @@ Then ask Claude to "extract brand assets from stripe.com" and it will use the `e
 ## Self-hosting the web app
 
 ```bash
-git clone https://github.com/ethanjyx/openbrand.git
+git clone https://github.com/tight-studio/openbrand.git
 cd openbrand
 bun install
 bun dev

@@ -20,7 +20,7 @@
   "homepage": "https://openbrand.sh",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ethanjyx/openbrand.git"
+    "url": "https://github.com/tight-studio/openbrand.git"
   },
   "keywords": [
     "brand",

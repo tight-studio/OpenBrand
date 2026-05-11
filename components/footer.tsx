@@ -5,12 +5,12 @@ export function Footer({ className = "" }: { className?: string }) {
     >
       OpenBrand is designed, built, and backed by{" "}
       <a
-        href="https://tight.software/"
+        href="https://tight.studio/"
         target="_blank"
         rel="noopener noreferrer"
         className="underline hover:text-neutral-600 transition-colors"
       >
-        Tight Software LLC
+        Tight Studio
       </a>
       .
     </footer>
