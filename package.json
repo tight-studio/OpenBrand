@@ -1,6 +1,6 @@
 {
   "name": "openbrand",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Extract brand assets (logos, colors, backdrops) from any website URL",
   "main": "dist/index.js",
   "module": "dist/index.mjs",

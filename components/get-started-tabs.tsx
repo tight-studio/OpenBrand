@@ -63,7 +63,7 @@ function AgentSkillContent() {
         Add OpenBrand to Claude Code, Cursor, Codex, Gemini CLI, and{" "}
         <a href="https://skills.sh" className="underline hover:text-neutral-700">40+ other agents</a>:
       </p>
-      <pre className="p-4 rounded-xl bg-neutral-900 text-neutral-100 text-sm overflow-x-auto font-mono leading-relaxed mb-4">{`npx skills add ethanjyx/openbrand`}</pre>
+      <pre className="p-4 rounded-xl bg-neutral-900 text-neutral-100 text-sm overflow-x-auto font-mono leading-relaxed mb-4">{`npx skills add tight-studio/openbrand`}</pre>
       <p className="text-neutral-400 text-sm">
         Once installed, your agent automatically knows how to extract brand assets — just ask it to &ldquo;extract brand assets from stripe.com&rdquo;.
       </p>

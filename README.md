@@ -49,12 +49,12 @@ res = requests.get(
 brand = res.json()
 ```
 
-## As an [agent skill](https://skills.sh/ethanjyx/openbrand/openbrand)
+## As an [agent skill](https://skills.sh/tight-studio/openbrand/openbrand)
 
 Add OpenBrand to Claude Code, Cursor, Codex, Gemini CLI, and [40+ other agents](https://skills.sh):
 
 ```bash
-npx skills add ethanjyx/openbrand
+npx skills add tight-studio/openbrand
 ```
 
 Once installed, your agent automatically knows how to extract brand assets — just ask it to "extract brand assets from stripe.com".
